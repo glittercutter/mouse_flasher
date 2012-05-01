@@ -3,7 +3,7 @@
 
 #include <avr/io.h>
 
-PWM_MAX = 255
+PWM_MAX = 127
 
 isreg = 0
 zero = 1
@@ -30,22 +30,44 @@ idir = 26 ; bitflag
 
 
 ;;; ======================
-    .global main
-main:
-    rcall init
-.loop:
-    sleep
-    rjmp .loop
+.macro INIT_TIMER0
+    ; set CTC mode
+    ldi itmp0, 1<<WGM01
+    out IO(TCCR0A), itmp0
+    ; set compare value
+    ldi itmp0, 100
+    out IO(OCR0A), itmp0
+    ; enable on compare match interrupt
+    ldi itmp0, 1<<OCIE0A
+    out IO(TIMSK), itmp0
+    ; set prescaler and start timer
+    ldi itmp0, 1<<CS00 ; prescaler value (0)
+    out IO(TCCR0B), itmp0
+.endm
 
 
 ;;; ======================
-init:
+.macro INIT_TIMER1
+    ; set compare value, 61 tick second at prescaler 64, at 1Mhz
+    ldi itmp0, 255
+    out IO(OCR1A), itmp0
+    ; set CTC mode and prescaler 64, 15625hz at 1Mhz
+    ldi itmp0, (1<<CTC1) | (1<<CS12) | (1<<CS11) | (1<<CS10)
+    out IO(TCCR1), itmp0
+    ; enable on compare match interrupt
+    in itmp0, IO(TIMSK)
+    ori itmp0, 1<<OCIE1A
+    out IO(TIMSK), itmp0
+.endm
+
+
+;;; ======================
+.macro INIT
     ; init outputs
     ldi tmp0, (1<<PB0) | (1<<PB1) | (1<<PB2) | (1<<PB3)
     ldi tmp1, (1<<DDB0) | (1<<DDB1) | (1<<DDB2) | (1<<DDB3)
     out IO(PORTB), tmp0
     out IO(DDRB), tmp1
-    nop
     
     ; init value
     ldi ival0, (PWM_MAX/4) * 0
@@ -55,44 +77,29 @@ init:
     ldi icurcycle, 0
 
     sei ; enable interupt
-    rcall init_timer0
-    rcall init_timer1
-
-    ret
-
-
-;;; ======================
-init_timer0:
-    ; set CTC mode
-    ldi itmp0, 1<<WGM01
-    out IO(TCCR0A), itmp0
-    ; set compare value
-    ldi itmp0, 30
-    out IO(OCR0A), itmp0
-    ; enable on compare match interrupt
-    ldi itmp0, 1<<OCIE0A
-    out IO(TIMSK), itmp0
-    ; set prescaler and start timer
-    ldi itmp0, 1<<CS00 ; prescaler value (0)
-    out IO(TCCR0B), itmp0
-
-    ret
+    INIT_TIMER0
+    INIT_TIMER1
+.endm
 
 
 ;;; ======================
-init_timer1:
-    ; set CTC mode and prescaler 32
-    ldi itmp0, (1<<CTC1) | (1<<CS11) | (1<<CS12)
-    out IO(TCCR1), itmp0
-    ; set compare value
-    ldi itmp0, 1
-    out IO(OCR1A), itmp0
-    ; enable on compare match interrupt
-    in itmp0, IO(TIMSK)
-    ori itmp0, 1<<OCIE1A
-    out IO(TIMSK), itmp0
+;;; params: icall0 in: value from 0 to pwm table size - 1, out: fetched value
+;;; ======================
+.macro FETCH_PWM_TABLE
+    ldi ZL, lo8(pwm_table)
+    ldi ZH, hi8(pwm_table)
+    add ZL, icall0
+    adc ZH, zero
+    lpm icall0, Z
+.endm
 
-    ret
+
+;;; ======================
+    .global main
+main:
+    INIT
+.loop:
+    rjmp .loop
 
 
 ;;; ======================
@@ -103,12 +110,15 @@ TIMER0_COMPA_vect:
     in isreg, IO(SREG)
 
     inc icurcycle
+    cpi icurcycle, PWM_MAX
+    brne .skipcyclereset
+    clr icurcycle
+.skipcyclereset:
 
     ;;; ======================
     .macro PWM_UPDATE_OUTPUT outval, outnum
         mov icall0, \outval
-        lsr icall0 ; scale to 0 - 127 from 0 - 255
-        rcall fetch_pwm_table
+        FETCH_PWM_TABLE
         cp icall0, icurcycle
         brsh 1f
 
@@ -181,19 +191,6 @@ TIMER1_COMPA_vect:
 
     out IO(SREG), isreg
     reti
-
-;;; ======================
-;;; params: icall0 in: value from 0 to pwm table size - 1, out: fetched value
-;;; ======================
-fetch_pwm_table:
-    ldi ZL, lo8(pwm_table)
-    ldi ZH, hi8(pwm_table)
-    add ZL, icall0
-    adc ZH, zero
-
-    lpm icall0, Z
-
-    ret
 
 
 ;;; ======================
